@@ -501,6 +501,8 @@ func TestShouldNotRecreateLBWhenNetworkTiersMismatch(t *testing.T) {
 	gce, err := fakeGCECloud(vals)
 	require.NoError(t, err)
 	svc := fakeLoadbalancerService("")
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
 	nodes, err := createAndInsertNodes(gce, nodeNames, vals.ZoneName)
 	require.NoError(t, err)
 	staticIP := "1.2.3.4"
@@ -582,9 +584,17 @@ func TestEnsureExternalLoadBalancer(t *testing.T) {
 	require.NoError(t, err)
 
 	svc := fakeLoadbalancerService("")
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
 	status, err := createExternalLoadBalancer(gce, svc, nodeNames, vals.ClusterName, vals.ClusterID, vals.ZoneName)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, status.Ingress)
+
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Get(context.TODO(), svc.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	if !hasFinalizer(svc, NetLBFinalizerV1) {
+		t.Fatalf("Expected finalizer '%s' not found in Finalizer list - %v", NetLBFinalizerV1, svc.Finalizers)
+	}
 
 	assertExternalLbResources(t, gce, svc, vals, nodeNames)
 }
@@ -599,8 +609,15 @@ func TestUpdateExternalLoadBalancer(t *testing.T) {
 	require.NoError(t, err)
 
 	svc := fakeLoadbalancerService("")
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
 	_, err = createExternalLoadBalancer(gce, svc, []string{nodeName}, vals.ClusterName, vals.ClusterID, vals.ZoneName)
 	assert.NoError(t, err)
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Get(context.TODO(), svc.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	if !hasFinalizer(svc, NetLBFinalizerV1) {
+		t.Fatalf("Expected finalizer '%s' not found in Finalizer list - %v", NetLBFinalizerV1, svc.Finalizers)
+	}
 
 	newNodeName := "test-node-2"
 	newNodes, err := createAndInsertNodes(gce, []string{nodeName, newNodeName}, vals.ZoneName)
@@ -673,13 +690,27 @@ func TestEnsureExternalLoadBalancerDeleted(t *testing.T) {
 	require.NoError(t, err)
 
 	svc := fakeLoadbalancerService("")
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+
+	require.NoError(t, err)
 	_, err = createExternalLoadBalancer(gce, svc, []string{"test-node-1"}, vals.ClusterName, vals.ClusterID, vals.ZoneName)
 	assert.NoError(t, err)
+
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Get(context.TODO(), svc.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	if !hasFinalizer(svc, NetLBFinalizerV1) {
+		t.Fatalf("Expected finalizer '%s' not found in Finalizer list - %v", NetLBFinalizerV1, svc.Finalizers)
+	}
 
 	err = gce.ensureExternalLoadBalancerDeleted(vals.ClusterName, vals.ClusterID, svc)
 	assert.NoError(t, err)
 
 	assertExternalLbResourcesDeleted(t, gce, svc, vals, true)
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Get(context.TODO(), svc.Name, metav1.GetOptions{})
+	require.NoError(t, err)
+	if hasFinalizer(svc, NetLBFinalizerV1) {
+		t.Fatalf("Finalizer '%s' not deleted as part of ELB delete", NetLBFinalizerV1)
+	}
 }
 
 func TestLoadBalancerWrongTierResourceDeletion(t *testing.T) {
@@ -691,6 +722,9 @@ func TestLoadBalancerWrongTierResourceDeletion(t *testing.T) {
 
 	svc := fakeLoadbalancerService("")
 	svc.Annotations = map[string]string{NetworkTierAnnotationKey: "Premium"}
+
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
 
 	// cloud.NetworkTier defaults to Premium
 	desiredTier, err := gce.getServiceNetworkTier(svc)
@@ -750,6 +784,9 @@ func TestEnsureExternalLoadBalancerFailsIfInvalidNetworkTier(t *testing.T) {
 	svc := fakeLoadbalancerService("")
 	svc.Annotations = map[string]string{NetworkTierAnnotationKey: wrongTier}
 
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
+
 	_, err = gce.ensureExternalLoadBalancer(vals.ClusterName, vals.ClusterID, svc, nil, nodes)
 	require.Error(t, err)
 	assert.EqualError(t, err, errStrUnsupportedTier)
@@ -763,6 +800,10 @@ func TestEnsureExternalLoadBalancerFailsWithNoNodes(t *testing.T) {
 	require.NoError(t, err)
 
 	svc := fakeLoadbalancerService("")
+
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
+
 	_, err = gce.ensureExternalLoadBalancer(vals.ClusterName, vals.ClusterID, svc, nil, []*v1.Node{})
 	require.Error(t, err)
 	assert.EqualError(t, err, errStrLbNoHosts)
@@ -803,6 +844,9 @@ func TestEnsureExternalLoadBalancerRBSAnnotation(t *testing.T) {
 
 			svc := fakeLoadbalancerService("")
 			svc.Annotations = tc.annotations
+
+			svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+			require.NoError(t, err)
 
 			_, err = gce.ensureExternalLoadBalancer(vals.ClusterName, vals.ClusterID, svc, nil, nodes)
 			if tc.wantError != nil {
@@ -847,6 +891,10 @@ func TestEnsureExternalLoadBalancerRBSFinalizer(t *testing.T) {
 			finalizers: []string{},
 			wantError:  nil,
 		},
+		"When has ELBFinalizer V1": {
+			finalizers: []string{NetLBFinalizerV1},
+			wantError:  nil,
+		},
 	} {
 		t.Run(desc, func(t *testing.T) {
 			vals := DefaultTestClusterValues()
@@ -865,11 +913,19 @@ func TestEnsureExternalLoadBalancerRBSFinalizer(t *testing.T) {
 			svc := fakeLoadbalancerService("")
 			svc.Finalizers = tc.finalizers
 
+			svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+			require.NoError(t, err)
+
 			_, err = gce.ensureExternalLoadBalancer(vals.ClusterName, vals.ClusterID, svc, nil, nodes)
 			if tc.wantError != nil {
 				assert.EqualError(t, err, (*tc.wantError).Error())
 			} else {
 				assert.NoError(t, err, "Should not return an error "+desc)
+				svc, err = gce.client.CoreV1().Services(svc.Namespace).Get(context.TODO(), svc.Name, metav1.GetOptions{})
+				require.NoError(t, err)
+				if !hasFinalizer(svc, NetLBFinalizerV1) {
+					t.Fatalf("Expected finalizer '%s' not found in Finalizer list - %v", NetLBFinalizerV1, svc.Finalizers)
+				}
 			}
 
 			err = gce.updateExternalLoadBalancer(vals.ClusterName, svc, nodes)
@@ -877,8 +933,78 @@ func TestEnsureExternalLoadBalancerRBSFinalizer(t *testing.T) {
 				assert.EqualError(t, err, (*tc.wantError).Error())
 			} else {
 				assert.NoError(t, err, "Should not return an error "+desc)
+				svc, err = gce.client.CoreV1().Services(svc.Namespace).Get(context.TODO(), svc.Name, metav1.GetOptions{})
+				require.NoError(t, err)
+				if !hasFinalizer(svc, NetLBFinalizerV1) {
+					t.Fatalf("Expected finalizer '%s' not found in Finalizer list - %v", NetLBFinalizerV1, svc.Finalizers)
+				}
 			}
 
+			err = gce.ensureExternalLoadBalancerDeleted(vals.ClusterName, vals.ClusterID, svc)
+			if tc.wantError != nil {
+				assert.EqualError(t, err, (*tc.wantError).Error())
+			} else {
+				assert.NoError(t, err, "Should not return an error "+desc)
+				svc, err = gce.client.CoreV1().Services(svc.Namespace).Get(context.TODO(), svc.Name, metav1.GetOptions{})
+				require.NoError(t, err)
+				if hasFinalizer(svc, NetLBFinalizerV1) {
+					t.Fatalf("Finalizer '%s' not deleted as part of ELB delete", NetLBFinalizerV1)
+				}
+			}
+		})
+	}
+}
+
+func TestDeleteExternalLoadBalancerWithFinalizer(t *testing.T) {
+	t.Parallel()
+
+	for desc, tc := range map[string]struct {
+		finalizers []string
+		wantError  *error
+	}{
+		"When has ELBRbsFinalizer V2": {
+			finalizers: []string{NetLBFinalizerV2},
+			wantError:  &cloudprovider.ImplementedElsewhere,
+		},
+		"When has ELBRbsFinalizer V3": {
+			finalizers: []string{NetLBFinalizerV3},
+			wantError:  &cloudprovider.ImplementedElsewhere,
+		},
+		"When has no finalizer": {
+			finalizers: []string{},
+			wantError:  nil,
+		},
+		"When has ELBFinalizer V1": {
+			finalizers: []string{NetLBFinalizerV1},
+			wantError:  nil,
+		},
+	} {
+		t.Run(desc, func(t *testing.T) {
+			vals := DefaultTestClusterValues()
+
+			gce, err := fakeGCECloud(vals)
+			if err != nil {
+				t.Fatalf("fakeGCECloud(%v) returned error %v, want nil", vals, err)
+			}
+
+			nodeNames := []string{"test-node-1"}
+			nodes, err := createAndInsertNodes(gce, nodeNames, vals.ZoneName)
+			if err != nil {
+				t.Fatalf("createAndInsertNodes(_, %v, %v) returned error %v, want nil", nodeNames, vals.ZoneName, err)
+			}
+
+			svc := fakeLoadbalancerService("")
+
+			svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+			require.NoError(t, err)
+
+			_, err = gce.ensureExternalLoadBalancer(vals.ClusterName, vals.ClusterID, svc, nil, nodes)
+			if err != nil {
+				assert.NoError(t, err, "Should not return an error "+desc)
+			}
+
+			// use test finalizers for the deletion
+			svc.Finalizers = tc.finalizers
 			err = gce.ensureExternalLoadBalancerDeleted(vals.ClusterName, vals.ClusterID, svc)
 			if tc.wantError != nil {
 				assert.EqualError(t, err, (*tc.wantError).Error())
@@ -928,6 +1054,10 @@ func TestEnsureExternalLoadBalancerExistingFwdRule(t *testing.T) {
 			}
 
 			svc := fakeLoadbalancerService("")
+
+			svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+			require.NoError(t, err)
+
 			_, err = gce.ensureExternalLoadBalancer(vals.ClusterName, vals.ClusterID, svc, tc.existingForwardingRule, nodes)
 			if tc.wantError != nil {
 				assert.EqualError(t, err, (*tc.wantError).Error())
@@ -944,11 +1074,15 @@ func TestForwardingRuleNeedsUpdate(t *testing.T) {
 	vals := DefaultTestClusterValues()
 	gce, err := fakeGCECloud(DefaultTestClusterValues())
 	require.NoError(t, err)
-	status, err := createExternalLoadBalancer(gce, fakeLoadbalancerService(""), []string{"test-node-1"}, vals.ClusterName, vals.ClusterID, vals.ZoneName)
+
+	svc := fakeLoadbalancerService("")
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	status, err := createExternalLoadBalancer(gce, svc, []string{"test-node-1"}, vals.ClusterName, vals.ClusterID, vals.ZoneName)
 	require.NotNil(t, status)
 	require.NoError(t, err)
 
-	svc := fakeLoadbalancerService("")
 	lbName := gce.GetLoadBalancerName(context.TODO(), "", svc)
 	ipAddr := status.Ingress[0].IP
 
@@ -1372,6 +1506,9 @@ func TestTargetPoolAddsAndRemoveInstancesInBatches(t *testing.T) {
 	assert.NoError(t, err)
 
 	svc := fakeLoadbalancerService("")
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
+
 	nodeName := "default-node"
 	_, err = createExternalLoadBalancer(gce, svc, []string{nodeName}, vals.ClusterName, vals.ClusterID, vals.ZoneName)
 	assert.NoError(t, err)
@@ -1405,6 +1542,10 @@ func TestTargetPoolNeedsRecreation(t *testing.T) {
 	require.NoError(t, err)
 
 	svc := fakeLoadbalancerService("")
+
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
+
 	serviceName := svc.ObjectMeta.Name
 	lbName := gce.GetLoadBalancerName(context.TODO(), "", svc)
 	nodes, err := createAndInsertNodes(gce, []string{"test-node-1"}, vals.ZoneName)
@@ -1453,6 +1594,10 @@ func TestFirewallNeedsUpdate(t *testing.T) {
 	gce, err := fakeGCECloud(DefaultTestClusterValues())
 	require.NoError(t, err)
 	svc := fakeLoadbalancerService("")
+
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
+
 	svc.Spec.Ports = []v1.ServicePort{
 		{Name: "port1", Protocol: v1.ProtocolTCP, Port: int32(80), TargetPort: intstr.FromInt(80)},
 		{Name: "port2", Protocol: v1.ProtocolTCP, Port: int32(81), TargetPort: intstr.FromInt(81)},
@@ -1722,6 +1867,10 @@ func TestEnsureTargetPoolAndHealthCheck(t *testing.T) {
 	nodes, err := createAndInsertNodes(gce, []string{"test-node-1"}, vals.ZoneName)
 	require.NoError(t, err)
 	svc := fakeLoadbalancerService("")
+
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
+
 	status, err := gce.ensureExternalLoadBalancer(
 		vals.ClusterName,
 		vals.ClusterID,
@@ -1801,6 +1950,10 @@ func TestCreateAndUpdateFirewallSucceedsOnXPN(t *testing.T) {
 	gce.eventRecorder = recorder
 
 	svc := fakeLoadbalancerService("")
+
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
+
 	nodes, err := createAndInsertNodes(gce, []string{"test-node-1"}, vals.ZoneName)
 	require.NoError(t, err)
 	hostNames := nodeNames(nodes)
@@ -1842,7 +1995,12 @@ func TestEnsureExternalLoadBalancerDeletedSucceedsOnXPN(t *testing.T) {
 	gce, err := fakeGCECloud(DefaultTestClusterValues())
 	require.NoError(t, err)
 
-	_, err = createExternalLoadBalancer(gce, fakeLoadbalancerService(""), []string{"test-node-1"}, vals.ClusterName, vals.ClusterID, vals.ZoneName)
+	svc := fakeLoadbalancerService("")
+
+	svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	_, err = createExternalLoadBalancer(gce, svc, []string{"test-node-1"}, vals.ClusterName, vals.ClusterID, vals.ZoneName)
 	require.NoError(t, err)
 
 	c := gce.c.(*cloud.MockGCE)
@@ -1853,7 +2011,6 @@ func TestEnsureExternalLoadBalancerDeletedSucceedsOnXPN(t *testing.T) {
 	recorder := record.NewFakeRecorder(1024)
 	gce.eventRecorder = recorder
 
-	svc := fakeLoadbalancerService("")
 	err = gce.ensureExternalLoadBalancerDeleted(vals.ClusterName, vals.ClusterID, svc)
 	require.NoError(t, err)
 
@@ -1956,6 +2113,10 @@ func TestEnsureExternalLoadBalancerErrors(t *testing.T) {
 			nodes, err := createAndInsertNodes(gce, []string{"test-node-1"}, vals.ZoneName)
 			require.NoError(t, err)
 			svc := fakeLoadbalancerService("")
+
+			svc, err = gce.client.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+			require.NoError(t, err)
+
 			params = newEnsureELBParams(nodes, svc)
 			if tc.adjustParams != nil {
 				tc.adjustParams(params)

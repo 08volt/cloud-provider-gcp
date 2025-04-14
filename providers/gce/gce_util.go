@@ -52,6 +52,9 @@ const (
 	// RBS LB implementation.
 	RegionalExternalLoadBalancerClass = "networking.gke.io/l4-regional-external"
 
+	// NetLBFinalizerV1 is the finalizer used by cloud-controller-manager that manage L4 External LoadBalancer services.
+	NetLBFinalizerV1 = "gke.networking.io/l4-netlb-v1"
+
 	// NetLBFinalizerV2 is the finalizer used by newer controllers that manage L4 External LoadBalancer services.
 	NetLBFinalizerV2 = "gke.networking.io/l4-netlb-v2"
 
@@ -413,10 +416,32 @@ func removeString(slice []string, s string) []string {
 	return newSlice
 }
 
+// usesCCMforNetLB checks if service uses CCM as controller.
+// It should be handled by Service Controller.
+func usesCCMforNetLB(service *v1.Service, forwardingRule *compute.ForwardingRule) bool {
+	// Detect CCM by finalizer
+	if hasFinalizer(service, NetLBFinalizerV1) {
+		return true
+	}
+	// Detect not CCM by load balancer class
+	if service.Spec.LoadBalancerClass != nil && !hasLoadBalancerClass(service, LegacyRegionalExternalLoadBalancerClass) {
+		return false
+	}
+	// Detect not CCM by RBS
+	if usesL4RBS(service, forwardingRule) {
+		return false
+	}
+	return true
+}
+
 // usesL4RBS checks if service uses Regional Backend Service as a Backend.
 // Such services implemented in other controllers and
 // should not be handled by Service Controller.
 func usesL4RBS(service *v1.Service, forwardingRule *compute.ForwardingRule) bool {
+	// Detect CCM controlled services by finalizer v1
+	if hasFinalizer(service, NetLBFinalizerV1) {
+		return false
+	}
 	// Detect RBS by loadBalancerClass
 	if hasLoadBalancerClass(service, RegionalExternalLoadBalancerClass) {
 		return true
